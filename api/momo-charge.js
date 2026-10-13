@@ -18,14 +18,14 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing required parameters: amount, email, phone' });
     }
 
-    // Standardize Ghana phone number
+    // Standardize Ghana phone number (e.g. 024XXXXXXX)
     let cleanPhone = String(phone).replace(/[^\d]/g, '');
     if (cleanPhone.startsWith('233')) {
       cleanPhone = '0' + cleanPhone.slice(3);
     }
 
     // Map network provider to Paystack Ghana mobile money provider codes
-    // Paystack Ghana providers: 'mtn' (MTN), 'vod' (Telecel/Vodafone), 'atl' (AT/AirtelTigo)
+    // 'mtn' (MTN MoMo), 'vod' (Telecel/Vodafone Cash), 'atl' (AT/AirtelTigo Money)
     let paystackProvider = 'mtn';
     const lowerProv = String(provider || '').toLowerCase();
     if (lowerProv.includes('telecel') || lowerProv.includes('vod')) {
@@ -37,7 +37,7 @@ export default async function handler(req, res) {
     const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
     const ref = `NLY-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // If Paystack Secret Key is available, dispatch live STK push to carrier
+    // If Paystack Secret Key is configured, dispatch the real STK push to carrier
     if (paystackSecretKey) {
       const response = await fetch('https://api.paystack.co/charge', {
         method: 'POST',
@@ -47,12 +47,13 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           email,
-          amount: Math.round(Number(amount) * 100), // in Ghana Pesewas
+          amount: Math.round(Number(amount) * 100), // In Ghana Pesewas
           currency: 'GHS',
           reference: ref,
           metadata: {
             custom_fields: [
               { display_name: 'Donor Name', variable_name: 'donor_name', value: donorName || 'Supporter' },
+              { display_name: 'Phone', variable_name: 'donor_phone', value: cleanPhone },
               { display_name: 'Frequency', variable_name: 'frequency', value: isMonthly ? 'Monthly' : 'One-time' }
             ]
           },
@@ -68,6 +69,7 @@ export default async function handler(req, res) {
       if (!response.ok || !data.status) {
         return res.status(400).json({
           success: false,
+          hasGateway: true,
           error: data.message || 'Payment provider could not initiate push prompt.',
           data
         });
@@ -75,6 +77,7 @@ export default async function handler(req, res) {
 
       return res.status(200).json({
         success: true,
+        hasGateway: true,
         reference: ref,
         paystackReference: data.data?.reference || ref,
         status: data.data?.status || 'pending',
@@ -83,19 +86,20 @@ export default async function handler(req, res) {
       });
     }
 
-    // Fallback mode when environment secret key is pending setup
+    // When PAYSTACK_SECRET_KEY is not yet added in Vercel environment variables:
+    // Inform the client clearly that the automated telecom push requires gateway credentials
     return res.status(200).json({
       success: true,
+      hasGateway: false,
       reference: ref,
-      status: 'pending',
-      simulated: true,
       phone: cleanPhone,
       provider: paystackProvider,
-      displayText: `Prompt dispatched to ${cleanPhone}. Please check your phone screen and enter your Mobile Money PIN.`,
-      instructions: {
-        mtn: 'If prompt does not appear, dial *170# > 6 (My Wallet) > 3 (My Approvals).',
-        vod: 'If prompt does not appear, dial *110# > 4 (Make Payments).',
-        atl: 'If prompt does not appear, dial *110# > 5 (Pending Approvals).'
+      message: 'Gateway key not yet connected. Automatic push prompt requires PAYSTACK_SECRET_KEY in Vercel.',
+      directPayment: {
+        number: '054 392 1084',
+        merchantId: '184920',
+        accountName: 'Noleya Foundation',
+        instructions: 'Please dial your carrier code on your phone to send the contribution directly to Noleya Foundation.'
       }
     });
   } catch (err) {

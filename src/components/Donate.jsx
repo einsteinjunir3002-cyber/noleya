@@ -278,26 +278,49 @@ export default function Donate({ onNavigate }) {
 
       const data = await res.json();
 
-      const newReceipt = {
-        reference: data.reference || ref,
-        amount: finalAmount,
-        currency: 'GHS',
-        isMonthly,
-        paymentMethod: 'momo',
-        provider: selectedProvider.name,
-        donorName,
-        donorEmail,
-        donorPhone,
-        date: formatReceiptDate(),
-        status: 'pending_authorization',
-        displayText: data.displayText
-      };
+      if (data.hasGateway) {
+        // A live gateway dispatched the push to the carrier
+        const newReceipt = {
+          reference: data.reference || ref,
+          amount: finalAmount,
+          currency: 'GHS',
+          isMonthly,
+          paymentMethod: 'momo',
+          provider: selectedProvider.name,
+          donorName,
+          donorEmail,
+          donorPhone,
+          date: formatReceiptDate(),
+          status: 'pending_authorization',
+          hasGateway: true,
+          displayText: data.displayText
+        };
 
-      setReceipt(newReceipt);
-      setCountdown(60);
-      setStep('prompting');
+        setReceipt(newReceipt);
+        setCountdown(60);
+        setStep('prompting');
+      } else {
+        // No gateway key in env: take donor straight to genuine manual transfer steps
+        const newReceipt = {
+          reference: ref,
+          amount: finalAmount,
+          currency: 'GHS',
+          isMonthly,
+          paymentMethod: 'momo',
+          provider: selectedProvider.name,
+          donorName,
+          donorEmail,
+          donorPhone,
+          date: formatReceiptDate(),
+          status: 'pending_verification',
+          hasGateway: false
+        };
+
+        setReceipt(newReceipt);
+        setStep('instruction');
+      }
     } catch (err) {
-      console.warn('API charge call error, falling back to direct prompt state:', err);
+      console.warn('API charge call error, falling back to manual transfer:', err);
       const newReceipt = {
         reference: ref,
         amount: finalAmount,
@@ -309,11 +332,11 @@ export default function Donate({ onNavigate }) {
         donorEmail,
         donorPhone,
         date: formatReceiptDate(),
-        status: 'pending_authorization'
+        status: 'pending_verification',
+        hasGateway: false
       };
       setReceipt(newReceipt);
-      setCountdown(60);
-      setStep('prompting');
+      setStep('instruction');
     } finally {
       setIsProcessing(false);
     }
@@ -697,17 +720,39 @@ export default function Donate({ onNavigate }) {
                 </p>
               </div>
 
+              {errorMsg && (
+                <div style={{ padding: '10px 14px', background: '#fdf2f2', border: '1px solid #f8b4b4', borderRadius: '6px', color: '#9b1c1c', fontSize: '13px', marginBottom: '14px', lineHeight: 1.5 }}>
+                  {errorMsg}
+                </div>
+              )}
+
               {/* ACTION BUTTONS */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <button
                   type="button"
                   className="submit-button"
                   disabled={isProcessing}
-                  onClick={() => handlePaymentConfirmed('completed')}
+                  onClick={async () => {
+                    setIsProcessing(true);
+                    setErrorMsg('');
+                    try {
+                      const res = await fetch(`/api/momo-status?reference=${encodeURIComponent(receipt.reference)}`);
+                      const data = await res.json();
+                      if (data.data?.status === 'success' || data.status === 'success') {
+                        handlePaymentConfirmed('completed');
+                      } else {
+                        setErrorMsg('⚠️ Payment confirmation has not yet been received from your network. Please ensure you approved the prompt on your phone or check pending approvals (*170# > 6 > 3 for MTN).');
+                      }
+                    } catch {
+                      setErrorMsg('Could not verify status with carrier. Please confirm on your handset.');
+                    } finally {
+                      setIsProcessing(false);
+                    }
+                  }}
                 >
                   {isProcessing ? (
                     <>
-                      <Loader2 size={18} className="animate-spin" /> Verifying Payment...
+                      <Loader2 size={18} className="animate-spin" /> Verifying Carrier Status...
                     </>
                   ) : (
                     <>
@@ -887,9 +932,13 @@ export default function Donate({ onNavigate }) {
                 <Check size={28} />
               </span>
               <span className="step-label">OFFICIAL DONATION RECEIPT</span>
-              <h3 style={{ margin: '8px 0 4px', fontSize: '24px' }}>Thank You, {receipt.donorName}!</h3>
+              <h3 style={{ margin: '8px 0 4px', fontSize: '24px' }}>
+                {receipt.status === 'completed' ? `Thank You, ${receipt.donorName}!` : `Transfer Logged, ${receipt.donorName}`}
+              </h3>
               <p style={{ color: '#43594a', fontSize: '14px', marginBottom: '16px' }}>
-                Your generous gift of <strong>{currencyFormatter.format(receipt.amount)}</strong> has been registered.
+                {receipt.status === 'completed'
+                  ? `Your generous gift of ${currencyFormatter.format(receipt.amount)} has been successfully paid and verified.`
+                  : `Your transfer notification for ${currencyFormatter.format(receipt.amount)} has been recorded. Our team will verify it against the transaction reference.`}
               </p>
 
               {/* RECEIPT TICKET */}
@@ -902,7 +951,7 @@ export default function Donate({ onNavigate }) {
                   <div>
                     <span style={{ color: '#74867b', display: 'block' }}>Status:</span>
                     <strong style={{ color: receipt.status === 'completed' ? '#176141' : '#b45309' }}>
-                      {receipt.status === 'completed' ? '✓ Verified & Authorized' : '⏳ Pending Review'}
+                      {receipt.status === 'completed' ? '✓ Payment Received & Verified' : '⏳ Pending Manual Verification'}
                     </strong>
                   </div>
                   <div>

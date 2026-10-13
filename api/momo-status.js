@@ -17,17 +17,16 @@ export default async function handler(req, res) {
 
   if (!paystackSecretKey) {
     return res.status(200).json({
-      status: 'pending',
-      simulated: true,
-      message: 'Waiting for handset PIN entry.'
+      status: 'no_gateway',
+      hasGateway: false,
+      message: 'No payment gateway key configured.'
     });
   }
 
   try {
     const response = await fetch(`https://api.paystack.co/charge/${encodeURIComponent(reference)}`, {
       headers: {
-        'Authorization': `Bearer ${paystackSecretKey}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${paystackSecretKey}`
       }
     });
 
