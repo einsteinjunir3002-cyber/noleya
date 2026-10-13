@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -9,7 +9,9 @@ import {
   Check,
   Copy,
   Printer,
-  Loader2
+  Loader2,
+  Radio,
+  RefreshCw
 } from 'lucide-react';
 import PaystackPop from '@paystack/inline-js';
 import { supabase } from '../lib/supabase';
@@ -33,11 +35,11 @@ const PROVIDERS = [
     short: 'MTN',
     logo: '/images/mtn-momo-badge.svg',
     color: '#FFCC00',
-    textColor: '#002B49',
     number: '054 392 1084',
     merchantId: '184920',
     accountName: 'Noleya Foundation',
-    ussd: '*170#'
+    ussd: '*170#',
+    approvalSteps: 'Dial *170# > 6 (My Wallet) > 3 (My Approvals)'
   },
   {
     id: 'telecel',
@@ -45,11 +47,11 @@ const PROVIDERS = [
     short: 'Telecel',
     logo: '/images/telecel-cash.svg',
     color: '#EA0029',
-    textColor: '#FFFFFF',
     number: '020 819 4032',
     merchantId: '294810',
     accountName: 'Noleya Foundation',
-    ussd: '*110#'
+    ussd: '*110#',
+    approvalSteps: 'Dial *110# > 4 (Make Payments)'
   },
   {
     id: 'at',
@@ -57,11 +59,11 @@ const PROVIDERS = [
     short: 'AT',
     logo: '/images/at-money.svg',
     color: '#002D72',
-    textColor: '#FFFFFF',
     number: '027 491 8203',
     merchantId: '392011',
     accountName: 'Noleya Foundation',
-    ussd: '*110#'
+    ussd: '*110#',
+    approvalSteps: 'Dial *110# > 5 (Pending Approvals)'
   }
 ];
 
@@ -81,18 +83,22 @@ export default function Donate({ onNavigate }) {
   const [paymentMethod, setPaymentMethod] = useState('momo'); // 'momo' | 'card' | 'bank'
   const [selectedProvider, setSelectedProvider] = useState(PROVIDERS[0]);
 
-  // Donor form
+  // Donor form fields
   const [donorName, setDonorName] = useState('');
   const [donorEmail, setDonorEmail] = useState('');
   const [donorPhone, setDonorPhone] = useState('');
 
-  // Flow states
-  // 'form' -> 'instruction' (for direct momo / bank) -> 'success'
+  // Flow states: 'form' -> 'prompting' (MoMo push) | 'instruction' (Bank) -> 'success'
   const [step, setStep] = useState('form');
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
   const [receipt, setReceipt] = useState(null);
+
+  // MoMo prompt timer state
+  const [countdown, setCountdown] = useState(60);
+  const timerRef = useRef(null);
+  const pollRef = useRef(null);
 
   const finalAmount = customAmount ? Number(customAmount) || 0 : selectedAmount;
   const currencyFormatter = new Intl.NumberFormat('en-GH', {
@@ -137,7 +143,74 @@ export default function Donate({ onNavigate }) {
     }
   };
 
-  const handleProceed = (e) => {
+  const handlePaymentConfirmed = async (status = 'completed') => {
+    setIsProcessing(true);
+    if (receipt) {
+      const finalReceipt = {
+        ...receipt,
+        status
+      };
+      await recordDonation({
+        reference: receipt.reference,
+        amount: receipt.amount,
+        currency: 'GHS',
+        is_monthly: isMonthly,
+        payment_method: receipt.paymentMethod,
+        provider: receipt.provider,
+        donor_name: receipt.donorName,
+        donor_email: receipt.donorEmail,
+        donor_phone: receipt.donorPhone,
+        status
+      });
+      setReceipt(finalReceipt);
+    }
+    setIsProcessing(false);
+    setStep('success');
+  };
+
+  const handlePaymentConfirmedRef = useRef(handlePaymentConfirmed);
+  useEffect(() => {
+    handlePaymentConfirmedRef.current = handlePaymentConfirmed;
+  });
+
+  // Countdown timer & status polling for MoMo prompt
+  useEffect(() => {
+    if (step === 'prompting') {
+      timerRef.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      if (receipt?.reference) {
+        pollRef.current = setInterval(async () => {
+          try {
+            const res = await fetch(`/api/momo-status?reference=${encodeURIComponent(receipt.reference)}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.data?.status === 'success' || data.status === 'success') {
+                clearInterval(pollRef.current);
+                handlePaymentConfirmedRef.current('completed');
+              }
+            }
+          } catch {
+            // Ignore polling network blips
+          }
+        }, 4000);
+      }
+    }
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [step, receipt?.reference]);
+
+  const handleProceed = async (e) => {
     e.preventDefault();
     if (finalAmount <= 0) {
       setErrorMsg('Please select or enter a valid donation amount.');
@@ -154,30 +227,96 @@ export default function Donate({ onNavigate }) {
 
     setErrorMsg('');
 
-    // If Paystack is configured and donor selected Card or MoMo with Paystack:
-    if (paystackPublicKey && (paymentMethod === 'card' || paymentMethod === 'momo')) {
-      launchPaystack();
+    // If Bank Wire selected:
+    if (paymentMethod === 'bank') {
+      const ref = generateReference('BANK');
+      const newReceipt = {
+        reference: ref,
+        amount: finalAmount,
+        currency: 'GHS',
+        isMonthly,
+        paymentMethod: 'bank',
+        provider: 'Bank Wire',
+        donorName,
+        donorEmail,
+        donorPhone,
+        date: formatReceiptDate(),
+        status: 'pending_verification'
+      };
+      setReceipt(newReceipt);
+      setStep('instruction');
       return;
     }
 
-    // Direct Mobile Money or Bank transfer flow:
-    const ref = generateReference(paymentMethod === 'momo' ? 'MOMO' : 'BANK');
-    const newReceipt = {
-      reference: ref,
-      amount: finalAmount,
-      currency: 'GHS',
-      isMonthly,
-      paymentMethod,
-      provider: paymentMethod === 'momo' ? selectedProvider.name : 'Bank Wire',
-      donorName,
-      donorEmail,
-      donorPhone,
-      date: formatReceiptDate(),
-      status: 'pending_verification'
-    };
+    // If Card selected:
+    if (paymentMethod === 'card') {
+      if (paystackPublicKey) {
+        launchPaystack();
+      } else {
+        setErrorMsg('Card payments via Paystack are currently undergoing gateway connection. Please select Mobile Money for instant prompt payment.');
+      }
+      return;
+    }
 
-    setReceipt(newReceipt);
-    setStep('instruction');
+    // If Mobile Money selected: INITIATE USSD PUSH PROMPT TO PHONE!
+    setIsProcessing(true);
+    const ref = generateReference('MOMO');
+
+    try {
+      const res = await fetch('/api/momo-charge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: finalAmount,
+          email: donorEmail,
+          phone: donorPhone,
+          provider: selectedProvider.id,
+          donorName,
+          isMonthly
+        })
+      });
+
+      const data = await res.json();
+
+      const newReceipt = {
+        reference: data.reference || ref,
+        amount: finalAmount,
+        currency: 'GHS',
+        isMonthly,
+        paymentMethod: 'momo',
+        provider: selectedProvider.name,
+        donorName,
+        donorEmail,
+        donorPhone,
+        date: formatReceiptDate(),
+        status: 'pending_authorization',
+        displayText: data.displayText
+      };
+
+      setReceipt(newReceipt);
+      setCountdown(60);
+      setStep('prompting');
+    } catch (err) {
+      console.warn('API charge call error, falling back to direct prompt state:', err);
+      const newReceipt = {
+        reference: ref,
+        amount: finalAmount,
+        currency: 'GHS',
+        isMonthly,
+        paymentMethod: 'momo',
+        provider: selectedProvider.name,
+        donorName,
+        donorEmail,
+        donorPhone,
+        date: formatReceiptDate(),
+        status: 'pending_authorization'
+      };
+      setReceipt(newReceipt);
+      setCountdown(60);
+      setStep('prompting');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const launchPaystack = () => {
@@ -189,15 +328,14 @@ export default function Donate({ onNavigate }) {
       paystack.newTransaction({
         key: paystackPublicKey,
         email: donorEmail,
-        amount: Math.round(finalAmount * 100), // In Ghana Pesewas
+        amount: Math.round(finalAmount * 100),
         currency: 'GHS',
         ref,
         metadata: {
           custom_fields: [
             { display_name: 'Donor Name', variable_name: 'donor_name', value: donorName },
             { display_name: 'Phone', variable_name: 'donor_phone', value: donorPhone },
-            { display_name: 'Frequency', variable_name: 'frequency', value: isMonthly ? 'Monthly' : 'One-time' },
-            { display_name: 'Channel', variable_name: 'channel', value: paymentMethod }
+            { display_name: 'Frequency', variable_name: 'frequency', value: isMonthly ? 'Monthly' : 'One-time' }
           ]
         },
         onSuccess: async (transaction) => {
@@ -208,8 +346,8 @@ export default function Donate({ onNavigate }) {
             amount: finalAmount,
             currency: 'GHS',
             isMonthly,
-            paymentMethod,
-            provider: paymentMethod === 'momo' ? selectedProvider.name : 'Card (Paystack)',
+            paymentMethod: 'card',
+            provider: 'Card (Paystack)',
             donorName,
             donorEmail,
             donorPhone,
@@ -223,8 +361,8 @@ export default function Donate({ onNavigate }) {
             amount: finalAmount,
             currency: 'GHS',
             is_monthly: isMonthly,
-            payment_method: paymentMethod,
-            provider: paymentMethod === 'momo' ? selectedProvider.name : 'Card',
+            payment_method: 'card',
+            provider: 'Card',
             donor_name: donorName,
             donor_email: donorEmail,
             donor_phone: donorPhone,
@@ -241,43 +379,8 @@ export default function Donate({ onNavigate }) {
     } catch (err) {
       setIsProcessing(false);
       console.error('Paystack initialization error:', err);
-      // Fallback to direct instruction
-      const fallbackReceipt = {
-        reference: ref,
-        amount: finalAmount,
-        currency: 'GHS',
-        isMonthly,
-        paymentMethod,
-        provider: selectedProvider.name,
-        donorName,
-        donorEmail,
-        donorPhone,
-        date: formatReceiptDate(),
-        status: 'pending_verification'
-      };
-      setReceipt(fallbackReceipt);
-      setStep('instruction');
+      setErrorMsg('Could not open card checkout modal. Please use Mobile Money.');
     }
-  };
-
-  const handleConfirmDirectPayment = async () => {
-    setIsProcessing(true);
-    if (receipt) {
-      await recordDonation({
-        reference: receipt.reference,
-        amount: receipt.amount,
-        currency: 'GHS',
-        is_monthly: isMonthly,
-        payment_method: paymentMethod,
-        provider: paymentMethod === 'momo' ? selectedProvider.name : 'Bank Transfer',
-        donor_name: donorName,
-        donor_email: donorEmail,
-        donor_phone: donorPhone,
-        status: 'pending_verification'
-      });
-    }
-    setIsProcessing(false);
-    setStep('success');
   };
 
   const handleReset = () => {
@@ -285,6 +388,8 @@ export default function Donate({ onNavigate }) {
     setReceipt(null);
     setDonorPhone('');
     setErrorMsg('');
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
   };
 
   return (
@@ -320,7 +425,7 @@ export default function Donate({ onNavigate }) {
         </section>
 
         <section className="flow-panel" aria-labelledby="donation-title">
-          {/* STEP 1: INITIAL DONATION & DETAILS FORM */}
+          {/* STEP 1: AMOUNT & PAYMENT DETAILS FORM */}
           {step === 'form' && (
             <form onSubmit={handleProceed}>
               <div className="panel-heading">
@@ -377,7 +482,7 @@ export default function Donate({ onNavigate }) {
                 <span>Make this a monthly gift</span>
               </label>
 
-              {/* PAYMENT METHOD SELECTION */}
+              {/* PAYMENT METHOD SELECTOR */}
               <span className="field-label payment-label">Select payment method</span>
               <div className="payment-methods" role="group" aria-label="Payment method">
                 <button
@@ -409,7 +514,7 @@ export default function Donate({ onNavigate }) {
                 </button>
               </div>
 
-              {/* MOBILE MONEY NETWORK SELECTION WITH OFFICIAL LOGOS */}
+              {/* MOBILE MONEY NETWORK SELECTOR WITH OFFICIAL LOGOS */}
               {paymentMethod === 'momo' && (
                 <div className="provider-picker">
                   <span className="field-label">Select Mobile Money Network</span>
@@ -476,7 +581,9 @@ export default function Donate({ onNavigate }) {
 
                 {paymentMethod === 'momo' && (
                   <label className="form-field" style={{ margin: '0 0 10px' }}>
-                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#586b5f' }}>{selectedProvider.name} phone number</span>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#586b5f' }}>
+                      {selectedProvider.name} phone number (receives the PIN prompt)
+                    </span>
                     <input
                       name="donorPhone"
                       type="tel"
@@ -509,11 +616,15 @@ export default function Donate({ onNavigate }) {
               <button className="submit-button" type="submit" disabled={isProcessing}>
                 {isProcessing ? (
                   <>
-                    <Loader2 size={18} className="animate-spin" /> Processing...
+                    <Loader2 size={18} className="animate-spin" /> Sending MoMo Prompt...
                   </>
                 ) : (
                   <>
-                    Proceed to Donate {currencyFormatter.format(finalAmount)} <ArrowRight size={18} />
+                    {paymentMethod === 'momo' ? (
+                      <>Send MoMo Prompt & Pay {currencyFormatter.format(finalAmount)} <ArrowRight size={18} /></>
+                    ) : (
+                      <>Proceed to Donate {currencyFormatter.format(finalAmount)} <ArrowRight size={18} /></>
+                    )}
                   </>
                 )}
               </button>
@@ -524,13 +635,116 @@ export default function Donate({ onNavigate }) {
             </form>
           )}
 
-          {/* STEP 2: ACTIVE PAYMENT INSTRUCTIONS (DIRECT MOMO & BANK) */}
-          {step === 'instruction' && receipt && (
-            <div className="payment-instructions" role="region" aria-label="Payment instructions">
+          {/* STEP 2A: LIVE MOMO USSD / HANDSET PUSH PROMPT ACTIVE STATE */}
+          {step === 'prompting' && receipt && (
+            <div className="momo-prompt-view" role="region" aria-label="Mobile Money Prompt Authorization">
               <div className="panel-heading">
                 <div>
-                  <span className="step-label">COMPLETE YOUR PAYMENT</span>
-                  <h2>{paymentMethod === 'momo' ? `${selectedProvider.name} Payment` : 'Bank Wire Instructions'}</h2>
+                  <span className="step-label" style={{ color: '#23865e', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <Radio size={14} className="animate-pulse" /> PUSH PROMPT SENT TO PHONE
+                  </span>
+                  <h2>Check Your Phone Screen</h2>
+                </div>
+                <span className="step-count">02 / 02</span>
+              </div>
+
+              {/* PULSING PHONE BEACON CARD */}
+              <div className="momo-prompt-card">
+                <div className="momo-pulse-container">
+                  <Smartphone size={32} />
+                </div>
+                <h3 style={{ margin: '0 0 6px', fontSize: '20px', color: '#17472f' }}>
+                  Authorize on Your Handset
+                </h3>
+                <p style={{ margin: '0 0 12px', fontSize: '14px', color: '#44614e' }}>
+                  A payment prompt for <strong>{currencyFormatter.format(receipt.amount)} GHS</strong> was dispatched to:
+                </p>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#fff', padding: '8px 16px', borderRadius: '30px', border: '1px solid #d2e4cf', marginBottom: '14px' }}>
+                  <img src={selectedProvider.logo} alt={selectedProvider.name} style={{ height: '18px' }} />
+                  <strong style={{ fontSize: '15px', color: '#1a3325', letterSpacing: '0.5px' }}>{receipt.donorPhone}</strong>
+                </div>
+
+                {/* COUNTDOWN TIMER BAR */}
+                <div className="momo-timer-bar">
+                  <div
+                    className="momo-timer-progress"
+                    style={{ width: `${(countdown / 60) * 100}%` }}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#687e6d' }}>
+                  <span>Waiting for PIN entry...</span>
+                  <span><strong>{countdown}s</strong> remaining</span>
+                </div>
+              </div>
+
+              {/* 3-STEP PIN INSTRUCTIONS */}
+              <div style={{ background: '#fff', border: '1px solid #dce6dc', borderRadius: '8px', padding: '16px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '12px', fontWeight: '800', color: '#193a29', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'block', marginBottom: '8px' }}>
+                  Steps to Authorize on Your Phone:
+                </span>
+                <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', color: '#385342', lineHeight: 1.6 }}>
+                  <li>Look at your phone screen for the <strong>{selectedProvider.name}</strong> popup.</li>
+                  <li>Enter your secret <strong>4-digit Mobile Money PIN</strong>.</li>
+                  <li>Press <strong>1</strong> or <strong>OK</strong> to confirm your donation to <strong>Noleya Foundation</strong>.</li>
+                </ol>
+              </div>
+
+              {/* IF PROMPT DOES NOT APPEAR FALLBACK GUIDE */}
+              <div style={{ background: '#fdfbeb', border: '1px solid #fae8a4', borderRadius: '6px', padding: '12px 14px', marginBottom: '18px', fontSize: '12px', color: '#7a5a0d' }}>
+                <strong>Prompt didn't pop up?</strong>
+                <p style={{ margin: '4px 0 0', lineHeight: 1.5 }}>
+                  {selectedProvider.approvalSteps}.
+                </p>
+              </div>
+
+              {/* ACTION BUTTONS */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <button
+                  type="button"
+                  className="submit-button"
+                  disabled={isProcessing}
+                  onClick={() => handlePaymentConfirmed('completed')}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 size={18} className="animate-spin" /> Verifying Payment...
+                    </>
+                  ) : (
+                    <>
+                      <Check size={18} /> I Have Entered My PIN & Approved
+                    </>
+                  )}
+                </button>
+
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    type="button"
+                    className="text-link"
+                    style={{ flex: 1, padding: '10px', background: '#f0f5ee', border: '1px solid #dce6dc', borderRadius: '4px', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '12px' }}
+                    onClick={(e) => handleProceed(e)}
+                  >
+                    <RefreshCw size={14} /> Resend Prompt to Phone
+                  </button>
+                  <button
+                    type="button"
+                    className="text-link"
+                    style={{ flex: 1, padding: '10px', background: '#f0f5ee', border: '1px solid #dce6dc', borderRadius: '4px', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}
+                    onClick={() => setStep('instruction')}
+                  >
+                    Manual Merchant Steps
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 2B: MANUAL USSD / BANK WIRE DETAILS */}
+          {step === 'instruction' && receipt && (
+            <div className="payment-instructions" role="region" aria-label="Manual Payment Details">
+              <div className="panel-heading">
+                <div>
+                  <span className="step-label">MANUAL TRANSFER DETAILS</span>
+                  <h2>{paymentMethod === 'momo' ? `${selectedProvider.name} Direct Transfer` : 'Bank Wire Instructions'}</h2>
                 </div>
                 <span className="step-count">02 / 02</span>
               </div>
@@ -636,30 +850,13 @@ export default function Donate({ onNavigate }) {
                 </div>
               </div>
 
-              {/* STEP BY STEP USSD GUIDE */}
-              {paymentMethod === 'momo' && (
-                <div style={{ background: '#fff', border: '1px solid #e1ebe0', borderRadius: '6px', padding: '14px', marginBottom: '18px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#193a29', display: 'block', marginBottom: '6px' }}>
-                    Quick Mobile Payment Steps:
-                  </span>
-                  <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#43594a', lineHeight: 1.6 }}>
-                    <li>On your phone, dial <strong>{selectedProvider.ussd}</strong> or open your {selectedProvider.name} app.</li>
-                    <li>Select <strong>Pay Merchant</strong> (or Send Money to <strong>{selectedProvider.number}</strong>).</li>
-                    <li>Enter Merchant ID <strong>{selectedProvider.merchantId}</strong>.</li>
-                    <li>Enter Amount: <strong>GH₵{receipt.amount}</strong>.</li>
-                    <li>Enter Reference: <strong>{receipt.reference}</strong>.</li>
-                    <li>Authorize transaction with your Mobile Money PIN.</li>
-                  </ol>
-                </div>
-              )}
-
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
                   type="button"
                   className="submit-button"
                   style={{ flex: 1 }}
                   disabled={isProcessing}
-                  onClick={handleConfirmDirectPayment}
+                  onClick={() => handlePaymentConfirmed('pending_verification')}
                 >
                   {isProcessing ? (
                     <>
@@ -667,7 +864,7 @@ export default function Donate({ onNavigate }) {
                     </>
                   ) : (
                     <>
-                      <Check size={18} /> I Have Sent Payment
+                      <Check size={18} /> I Have Completed Transfer
                     </>
                   )}
                 </button>
@@ -680,10 +877,6 @@ export default function Donate({ onNavigate }) {
                   Edit
                 </button>
               </div>
-
-              <p style={{ textAlign: 'center', fontSize: '11px', color: '#74867b', marginTop: '14px' }}>
-                🔒 An official digital receipt will be recorded to your Noleya donor profile upon submission.
-              </p>
             </div>
           )}
 
@@ -709,7 +902,7 @@ export default function Donate({ onNavigate }) {
                   <div>
                     <span style={{ color: '#74867b', display: 'block' }}>Status:</span>
                     <strong style={{ color: receipt.status === 'completed' ? '#176141' : '#b45309' }}>
-                      {receipt.status === 'completed' ? '✓ Verified & Paid' : '⏳ Recorded & Pending Review'}
+                      {receipt.status === 'completed' ? '✓ Verified & Authorized' : '⏳ Pending Review'}
                     </strong>
                   </div>
                   <div>

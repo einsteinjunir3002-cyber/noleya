@@ -1017,6 +1017,56 @@ h1 {
   font-size: 15px;
 }
 
+.momo-prompt-card {
+  background: linear-gradient(180deg, #f9fcf8 0%, #edf6eb 100%);
+  border: 1px solid #cee0cc;
+  border-radius: 10px;
+  padding: 24px 20px;
+  text-align: center;
+  margin-bottom: 18px;
+  position: relative;
+}
+
+.momo-pulse-container {
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #23865e;
+  border-radius: 50%;
+  color: #fff;
+  box-shadow: 0 0 0 0 rgba(35, 134, 94, 0.5);
+  animation: momo-pulse 2s infinite ease-out;
+}
+
+@keyframes momo-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(35, 134, 94, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 18px rgba(35, 134, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(35, 134, 94, 0);
+  }
+}
+
+.momo-timer-bar {
+  height: 4px;
+  background: #e2ece0;
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 14px 0 6px;
+}
+
+.momo-timer-progress {
+  height: 100%;
+  background: #23865e;
+  transition: width 1s linear;
+}
+
 .volunteer-layout {
   grid-template-columns: minmax(0, .85fr) minmax(460px, 1.15fr);
   gap: clamp(40px, 7vw, 96px);
