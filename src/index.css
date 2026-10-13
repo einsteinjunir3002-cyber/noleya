@@ -867,9 +867,8 @@ h1 {
   color: #b7c1b8;
 }
 
-.demo-note,
 .form-note {
-  color: #8b968e;
+  color: #68796d;
   text-align: center;
   margin: 12px 0 0;
   font-size: 11px;
@@ -880,33 +879,34 @@ h1 {
 }
 
 .payment-methods {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
   margin-top: 9px;
   display: grid;
 }
 
 .payment-method {
   color: #43594a;
-  min-height: 54px;
+  min-height: 52px;
   font: inherit;
   cursor: pointer;
   background: #fff;
   border: 1px solid #dce6dc;
-  border-radius: 4px;
+  border-radius: 6px;
   justify-content: center;
   align-items: center;
-  gap: 9px;
-  padding: 10px;
-  font-size: 13px;
+  gap: 7px;
+  padding: 8px;
+  font-size: 12px;
   font-weight: 600;
-  transition: border-color .18s, background .18s, color .18s;
+  transition: border-color .18s, background .18s, color .18s, box-shadow .18s;
   display: flex;
 }
 
 .payment-method:hover,
 .provider-option:hover {
   border-color: #75aa87;
+  background: #fbfdfa;
 }
 
 .payment-method.is-selected,
@@ -914,7 +914,7 @@ h1 {
   color: #176141;
   background: #eef7ec;
   border-color: #23865e;
-  box-shadow: inset 0 0 0 1px #23865e;
+  box-shadow: 0 0 0 1px #23865e;
 }
 
 .provider-picker {
@@ -927,28 +927,27 @@ h1 {
 
 .provider-options {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 9px;
+  gap: 10px;
   display: grid;
 }
 
 .provider-option {
   color: #43594a;
   min-width: 0;
-  min-height: 48px;
   font: inherit;
-  white-space: nowrap;
   cursor: pointer;
   background: #fff;
   border: 1px solid #dce6dc;
-  border-radius: 4px;
-  justify-content: center;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  transition: border-color .18s, background .18s, color .18s;
-  display: flex;
+  border-radius: 6px;
+  transition: border-color .18s, background .18s, color .18s, box-shadow .18s, transform .12s;
+}
+
+.provider-option:hover {
+  transform: translateY(-1px);
+}
+
+.provider-option img {
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.06));
 }
 
 .provider-mark {
@@ -1285,3 +1284,29 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   *, :before, :after { scroll-behavior: auto !important; }
 }
+
+@media print {
+  .flow-header,
+  .flow-footer,
+  .flow-intro,
+  button,
+  .text-link,
+  .back-link {
+    display: none !important;
+  }
+  .flow-page {
+    padding: 0 !important;
+    background: #fff !important;
+  }
+  .flow-layout,
+  .volunteer-layout {
+    display: block !important;
+    margin: 0 !important;
+  }
+  .flow-panel {
+    border: 1px solid #ccc !important;
+    box-shadow: none !important;
+    padding: 24px !important;
+  }
+}
+
